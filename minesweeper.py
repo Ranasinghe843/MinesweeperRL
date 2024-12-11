@@ -24,7 +24,7 @@ class MinesweeperEnv(gym.Env):
     # RENDER
     #   renders the current state using pygame
 
-    def __init__(self, height=9, width=9, num_mines=10):
+    def __init__(self, height=4, width=4, num_mines=3):
         self.observation_space = spaces.Box(-1, 8, shape=(height,width), dtype=int)
         self.action_space = spaces.MultiDiscrete([height,width])
 
@@ -33,8 +33,8 @@ class MinesweeperEnv(gym.Env):
         self.num_mines = num_mines
         self.win_reward = 1
         self.fail_reward = -1
-        self.pos_prog = 0.5
-        self.neg_prog = -0.5
+        self.pos_prog = 0.9
+        self.neg_prog = -0.3
         self.map = np.array([[False]*width for _ in range(height)])
         self.state = np.zeros((height, width),dtype=int)-1
         self.step_cntr = 0
@@ -94,28 +94,45 @@ class MinesweeperEnv(gym.Env):
         if len(action)!=2 or action[0]<0 or action[1]>=self.height or action[1]<0 or action[1]>=self.width:
             raise ValueError
         info = self._get_info()
-        if self.step_cntr==self.step_cntr_max:
-            return self.state, 0, True, info
-        else:
-            self.step_cntr += 1
+        # if self.step_cntr==self.step_cntr_max:
+        #     return self.state, 0, True, info
+        # else:
+        #     self.step_cntr += 1
         x,y = action[0],action[1]
 
         # Reward Structure
         if self.map[x][y]:
-            return self.state, self.fail_reward, True, info
+            self.state[x,y] = 9
+            return [x,y], self.fail_reward, True, info
         else:
             num_opened = self.get_num_opened()
-            if self.state[x,y]!=-1:
-                return self.state, 0, False, info
+            # if self.state[x,y]!=-1:
+            #     return self.state, 0, False, info
+            oldstate = (self.state[x,y]).copy()
+            surr = [True for i in range(max(0,x-1), min(self.height,x+2)) for j in range(max(0,y-1), min(self.width,y+2)) if self.state[i,j]==-1]
+            #print(surr)
+            if(False not in surr):
+                flag = 1
+            else:
+                flag = 0
             self.update_state(x,y)
             new_num_opened = self.get_num_opened()
+            
             if new_num_opened==self.height*self.width-self.num_mines:
-                return self.state, self.win_reward, True, info
-            if self.state[x,y] == -1:
-                return self.state, self.pos_prog, False, info
-            if self.state[x,y] in range(0, 9):
-                return self.state, self.neg_prog, False, info
-            return self.state, new_num_opened-num_opened, False, info
+                #print("ENTERS1")
+                return [x,y], self.win_reward, True, info
+            if oldstate in range(0, 9):
+                #print("ENTERS4")
+                return [x,y], self.neg_prog, False, info
+            if oldstate== -1:
+                if(flag == 1):
+                    return [x,y], -0.3, False, info
+                else:
+                    #print("ENTERS3")
+                    return [x,y], self.pos_prog, False, info
+            
+                
+            return [x,y], new_num_opened-num_opened, False, info
 
     def drawGrid(self):
         for y in range(0, self.window_width, self.block_size):

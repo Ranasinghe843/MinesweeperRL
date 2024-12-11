@@ -1,7 +1,5 @@
 import minesweeper
 from minesweeper import MinesweeperEnv
-import gymnasium as gym
-import gym_minesweeper
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
@@ -9,6 +7,8 @@ import random
 import torch
 from torch import nn
 import torch.nn.functional as F
+import copy
+
 
 # Define model
 class DQN(nn.Module):
@@ -16,12 +16,16 @@ class DQN(nn.Module):
         super().__init__()
 
         # Define network layers
-        self.fc1 = nn.Linear(in_states, h1_nodes)   # first fully connected layer
-        self.out = nn.Linear(h1_nodes, out_actions) # ouptut layer w
+        self.fc1 = nn.Linear(in_states, 120)   # first fully connected layer
+        self.fc2 = nn.Linear(120,100)
+        self.fc3 = nn.Linear(100,90)
+        self.out = nn.Linear(90, out_actions) # ouptut layer w
 
     def forward(self, x):
         x = F.relu(self.fc1(x)) # Apply rectified linear unit (ReLU) activation
-        x = self.out(x)         # Calculate output
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = self.out(x)       # Calculate output
         return x
 
 # Define memory for Experience Replay
@@ -55,12 +59,13 @@ class MinesweeperDQL():
 
     # Train the FrozeLake environment
     def train(self, episodes, render=False):
-        # Create FrozenLake instance
-        env = MinesweeperEnv()
-        num_states = 81
-        num_actions = 81
         
-        epsilon = 1 # 1 = 100% random actions
+        # Create FrozenLake instance
+        num_states = 16
+        length = 4
+        num_actions = 16
+        
+        epsilon = 0.9 # 1 = 100% random actions
         memory = ReplayMemory(self.replay_memory_size)
 
         # Create policy and target network. Number of nodes in the hidden layer can be adjusted.
@@ -86,39 +91,55 @@ class MinesweeperDQL():
         step_count=0
             
         for i in range(episodes):
-            state = [random.randint(0,8), random.randint(0,8)]  # Initialize to state 0
-            terminated = False      # True when agent falls in hole or reached goal
-            truncated = False       # True when agent takes more than 200 actions    
+            env = MinesweeperEnv()
 
+            state = [random.randint(0,3),random.randint(0,3)]# Initialize to state 0 (top-left corner)
+            terminated = False  # True when agent falls in hole or reaches goal
+            truncated = False   # True when agent takes more than 200 actions
+            #print(state)
+            # Agent navigates map until it falls into a hole (terminated), reaches goal (terminated), or has taken 200 actions (truncated).
+            #while not terminated and not truncated:
+            j = 0
+            state, _, terminated, truncated = env.step(state)
+            state = state[0]*length + state[1]
             # Agent navigates map until it falls into hole/reaches goal (terminated), or has taken 200 actions (truncated).
-            while(not terminated and not truncated):
-
+            j=0
+            while not terminated and j < 200:
+                j+=1
                 # Select action based on epsilon-greedy
                 if random.random() < epsilon:
                     # select random action
-                    action = [random.randint(0,8), random.randint(0,8)]
+                    action = [random.randint(0,length-1), random.randint(0,length-1)]
                 else:
                     # select best action            
                     with torch.no_grad():
                         action = policy_dqn(self.state_to_dqn_input(state, num_states)).argmax().item()
+                        action = [action // length, action % length]
 
                 # Execute action
+                if(env.state[action[0],action[1]] in range(0,9)):       
+                    continue
                 new_state,reward,terminated,truncated = env.step(action)
+
+                #print(env.state)
+               #
 
                 # Save experience into memory
                 memory.append((state, action, new_state, reward, terminated)) 
 
                 # Move to the next state
-                state = new_state
-
+                state = new_state[0]*length + new_state[1]
+                #print(reward)
                 # Increment step counter
                 step_count+=1
-
+            
+                #print(reward)
             # Keep track of the rewards collected per episode.
-            rewards_per_episode[i] = reward
+            if 'reward' in locals():
+                rewards_per_episode[i] = reward
 
             # Check if enough experience has been collected and if at least 1 reward has been collected
-            if len(memory)>self.mini_batch_size and np.sum(rewards_per_episode)>0:
+            if len(memory)>self.mini_batch_size:
                 mini_batch = memory.sample(self.mini_batch_size)
                 self.optimize(mini_batch, policy_dqn, target_dqn)        
 
@@ -156,15 +177,21 @@ class MinesweeperDQL():
 
     # Optimize policy network
     def optimize(self, mini_batch, policy_dqn, target_dqn):
-
+        # for _,param in policy_dqn.named_parameters():
+            # print(param.data)
         # Get number of input nodes
         num_states = policy_dqn.fc1.in_features
+        #print(num_states)
 
         current_q_list = []
         target_q_list = []
 
         for state, action, new_state, reward, terminated in mini_batch:
-
+            
+            new_state = new_state[0]*4 + new_state[1]
+            
+            action = action[0]*4 + action[1]
+            #
             if terminated: 
                 # Agent either reached goal (reward=1) or fell into hole (reward=0)
                 # When in a terminated state, target q value should be set to the reward.
@@ -193,6 +220,8 @@ class MinesweeperDQL():
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        # for _,param in policy_dqn.named_parameters():
+        #     print(param.data)
 
     '''
     Converts an state (int) to a tensor representation.
@@ -209,9 +238,10 @@ class MinesweeperDQL():
     # Run the FrozeLake environment with the learned policy
     def test(self, episodes):
         # Create Minesweeper environment
-        env = MinesweeperEnv()
-        num_states = 81
-        num_actions = 81
+        
+        num_states = 16
+        length = 4
+        num_actions = 16
 
         # Load trained policy
         policy_dqn = DQN(in_states=num_states, h1_nodes=num_states, out_actions=num_actions) 
@@ -222,31 +252,49 @@ class MinesweeperDQL():
         # self.print_dqn(policy_dqn)  # Uncomment this if needed to print the policy
 
         wins = 0  # Track number of wins
-
+        total = episodes
         for i in range(episodes):
-            state = [random.randint(0,8), random.randint(0,8)]  # Initialize to state 0 (top-left corner)
+            env = MinesweeperEnv()
+            state = [random.randint(0,3),random.randint(0,3)]# Initialize to state 0 (top-left corner)
             terminated = False  # True when agent falls in hole or reaches goal
             truncated = False   # True when agent takes more than 200 actions
-
+            #print(state)
             # Agent navigates map until it falls into a hole (terminated), reaches goal (terminated), or has taken 200 actions (truncated).
-            while not terminated and not truncated:
+            #while not terminated and not truncated:
+            j = 0
+            state, _, terminated, truncated = env.step(state)
+            state = state[0]*length + state[1]
+            while not terminated and j < 200:
+                j+=1
+                
                 # Select best action   
                 with torch.no_grad():
                     action = policy_dqn(self.state_to_dqn_input(state, num_states)).argmax().item()
-                action = [action // 9, action % 9]  # Convert action to 2D coordinates
-                # print(action)
+                action = [action // length, action % length]  # Convert action to 2D coordinates
+                #print(action)
                 # Execute action
-                state, reward, terminated, truncated = env.step(action)
-                # print(env.map)
-                # print(env.state)
-                # print(reward)
+                if(env.state[action[0],action[1]] in range(0,9)):       
+                    continue
+                new_state, reward, terminated, truncated = env.step(action)
+                #print(env.map)
+                #print(reward)
+                # print(truncated)
+
+                #print(reward)
+                #print(new_state)
+
+                state = new_state[0]*length + new_state[1]
+                j+=1
 
             # Check if the agent won the game (based on how your environment defines a win)
-            if reward == 1:  # Assuming a reward of 1 indicates a win
-                wins += 1
+            if 'reward' in locals():
+                if reward == 1:  # Assuming a reward of 1 indicates a win
+                    wins += 1
+            else:
+                total -=1
 
         # Calculate the win rate
-        win_rate = wins / episodes
+        win_rate = wins / total
         print(f"Win rate: {win_rate * 100:.2f}%")
 
 
@@ -276,5 +324,5 @@ class MinesweeperDQL():
 
 if __name__ == '__main__':
     Minesweeper_Game = MinesweeperDQL()
-    Minesweeper_Game.train(10000)
-    Minesweeper_Game.test(1000)
+    Minesweeper_Game.train(50000)
+    Minesweeper_Game.test(5000)
